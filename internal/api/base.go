@@ -78,6 +78,7 @@ func (a *Server) Routes(server *rest.Server) {
 		{Method: http.MethodDelete, Path: "/v1/addresses/:id", Handler: a.withAuth(a.deleteAddress)},
 		{Method: http.MethodGet, Path: "/v1/products", Handler: a.products},
 		{Method: http.MethodGet, Path: "/v1/skus/:id", Handler: a.sku},
+		{Method: http.MethodGet, Path: "/v1/skus/:id/price-trend", Handler: a.priceTrend},
 		{Method: http.MethodGet, Path: "/v1/compare", Handler: a.compare},
 		{Method: http.MethodGet, Path: "/v1/cart", Handler: a.withAuth(a.cart)},
 		{Method: http.MethodPost, Path: "/v1/cart/items", Handler: a.withAuth(a.addCart)},

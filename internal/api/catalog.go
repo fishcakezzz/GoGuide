@@ -139,6 +139,58 @@ func (a *Server) sku(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, s)
 }
 
+func (a *Server) priceTrend(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		fail(w, 400, "invalid_id", "")
+		return
+	}
+	sku, err := a.findSKU(r.Context(), id)
+	if err == sql.ErrNoRows || !sku.Active {
+		fail(w, 404, "not_found", "")
+		return
+	}
+	if err != nil {
+		fail(w, 500, "internal", "")
+		return
+	}
+	rows, err := a.DB.QueryContext(r.Context(), `SELECT observed_on,price_cents,event_label FROM demo_price_snapshots
+		WHERE sku_id=? AND observed_on >= UTC_DATE() - INTERVAL 29 DAY ORDER BY observed_on`, id)
+	if err != nil {
+		fail(w, 500, "internal", "")
+		return
+	}
+	defer rows.Close()
+	type point struct {
+		Day        string `json:"day"`
+		PriceCents int64  `json:"price_cents"`
+		EventLabel string `json:"event_label,omitempty"`
+	}
+	points := []point{}
+	var low, high int64
+	for rows.Next() {
+		var day time.Time
+		var p point
+		if err = rows.Scan(&day, &p.PriceCents, &p.EventLabel); err != nil {
+			fail(w, 500, "internal", "")
+			return
+		}
+		p.Day = day.Format("2006-01-02")
+		if low == 0 || p.PriceCents < low {
+			low = p.PriceCents
+		}
+		if p.PriceCents > high {
+			high = p.PriceCents
+		}
+		points = append(points, p)
+	}
+	if err = rows.Err(); err != nil {
+		fail(w, 500, "internal", "")
+		return
+	}
+	respond(w, 200, map[string]any{"sku_id": id, "data_kind": "simulated_scenario", "is_real_history": false, "points": points, "min_price_cents": low, "max_price_cents": high, "coverage_days": len(points)})
+}
+
 func (a *Server) compare(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(r.URL.Query().Get("sku_ids"), ",")
 	if len(parts) < 2 || len(parts) > 4 {
@@ -178,7 +230,7 @@ func (a *Server) createProduct(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_input", "")
 		return
 	}
-	if in.Category != "laptop" && in.Category != "monitor" && in.Category != "dock" {
+	if !domain.ValidCategory(in.Category) {
 		fail(w, 400, "invalid_category", "")
 		return
 	}
@@ -369,7 +421,7 @@ func (a *Server) adjustStock(w http.ResponseWriter, r *http.Request) {
 }
 
 func expectCategory(v string) error {
-	if v != "laptop" && v != "monitor" && v != "dock" {
+	if !domain.ValidCategory(v) {
 		return fmt.Errorf("invalid category")
 	}
 	return nil

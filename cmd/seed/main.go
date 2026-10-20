@@ -60,6 +60,9 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if err := seedPCParts(db); err != nil {
+		log.Fatal(err)
+	}
 	email, password := os.Getenv("GOGUIDE_ADMIN_EMAIL"), os.Getenv("GOGUIDE_ADMIN_PASSWORD")
 	if email != "" && len(password) >= 8 {
 		hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

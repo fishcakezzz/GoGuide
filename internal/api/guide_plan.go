@@ -115,7 +115,7 @@ func (a *Server) guideMessage(w http.ResponseWriter, r *http.Request) {
 	if intent.BudgetCents == 0 || len(intent.Categories) == 0 {
 		question := "请提供总预算（元）和要购买的品类。"
 		if intent.BudgetCents > 0 {
-			question = "请确认要购买笔记本、显示器或扩展坞中的哪些品类。"
+			question = "请确认要购买哪些电脑配件或外设。"
 		}
 		if len(intent.Categories) > 0 {
 			question = "请提供总预算（元）。"
@@ -145,6 +145,10 @@ func (a *Server) guideMessage(w http.ResponseWriter, r *http.Request) {
 	message := "已按当前预算、库存和兼容性规则生成方案。价格与库存会在加购和下单时复核。"
 	if len(plans) == 0 {
 		message = "当前数据中没有满足预算、库存和兼容性硬条件的组合；请调整预算或条件。"
+	} else if analysis, err := a.Guide.analyzeProposals(r.Context(), intent, plans); err == nil {
+		message = analysis
+	} else {
+		logErr(r, err)
 	}
 	_, _ = a.DB.ExecContext(r.Context(), "INSERT INTO guide_messages(session_id,user_id,role,content) VALUES(?,?,'assistant',?)", sid, current(r).UserID, message)
 	respond(w, 200, map[string]any{"intent": intent, "intent_version": version, "message": message, "proposals": plans, "mode": a.Guide.Mode})
@@ -160,7 +164,7 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	if intent.RequireOneCable && !hasCategory(categories, "dock") {
 		categories = append(categories, "dock")
 	}
-	if len(categories) > 3 {
+	if len(categories) > 10 {
 		return nil, fmt.Errorf("too many categories")
 	}
 	byCategory := map[string][]domain.SKU{}
@@ -172,16 +176,31 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 		}
 		filtered := []domain.SKU{}
 		for _, s := range candidates {
-			if intent.Brand != "" && cat == "laptop" && !strings.EqualFold(intent.Brand, s.Brand) {
+			if intent.Brand != "" && (len(categories) == 1 || cat == "laptop") && !strings.EqualFold(intent.Brand, s.Brand) {
 				continue
 			}
-			if cat == "laptop" && s.Specs.MemoryGB < intent.MinMemoryGB {
+			if (cat == "laptop" || cat == "ram") && s.Specs.MemoryGB < intent.MinMemoryGB {
+				continue
+			}
+			if (cat == "ram" || cat == "motherboard") && intent.MemoryType != "" && !strings.EqualFold(s.Specs.MemoryType, intent.MemoryType) {
+				continue
+			}
+			if cat == "ram" && s.Specs.MemorySpeedMT < intent.MinMemorySpeedMT {
+				continue
+			}
+			if cat == "storage" && s.Specs.StorageGB < intent.MinStorageGB {
+				continue
+			}
+			if cat == "gpu" && s.Specs.GPUVRAMGB < intent.MinGPUVRAMGB {
+				continue
+			}
+			if cat == "monitor" && s.Specs.RefreshHz < intent.MinRefreshHz {
 				continue
 			}
 			filtered = append(filtered, s)
 		}
-		if len(filtered) > 8 {
-			filtered = filtered[:8]
+		if len(filtered) > 12 {
+			filtered = filtered[:12]
 		}
 		byCategory[cat] = filtered
 		_, _ = a.DB.ExecContext(ctx, "INSERT INTO guide_tool_runs(session_id,tool_name,input_summary,result_summary,duration_ms) VALUES(?,'SearchSKU',?,?,?)", sid, mustJSON(map[string]any{"category": cat, "budget_cents": intent.BudgetCents}), mustJSON(map[string]any{"found": len(filtered)}), time.Since(start).Milliseconds())
@@ -202,7 +221,7 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 				next = append(next, copyItems)
 			}
 		}
-		combos = next
+		combos = pruneCombos(next, intent.BudgetCents, 1200)
 	}
 	valid := []proposal{}
 	for _, items := range combos {
@@ -220,6 +239,21 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 		p := proposal{IntentVersion: version, AmountCents: amount, BudgetLeftCents: intent.BudgetCents - amount, Compatibility: compat, Evidence: items}
 		for _, s := range items {
 			p.Items = append(p.Items, proposalItem{SKUID: s.ID, Quantity: 1, UnitPriceCents: s.PriceCents, PriceVersion: s.PriceVersion, Title: s.Title, Label: s.Label, Category: s.Category})
+			var minPrice, maxPrice int64
+			for _, alternative := range byCategory[s.Category] {
+				if alternative.ProductID != s.ProductID {
+					continue
+				}
+				if minPrice == 0 || alternative.PriceCents < minPrice {
+					minPrice = alternative.PriceCents
+				}
+				if alternative.PriceCents > maxPrice {
+					maxPrice = alternative.PriceCents
+				}
+			}
+			if maxPrice > minPrice {
+				p.Reasons = append(p.Reasons, fmt.Sprintf("%s 同配置模拟报价范围 ¥%.2f–¥%.2f，本方案选 ¥%.2f", s.Title, float64(minPrice)/100, float64(maxPrice)/100, float64(s.PriceCents)/100))
+			}
 			switch s.Category {
 			case "laptop":
 				if s.Specs.MemoryGB > 0 {
@@ -263,6 +297,17 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 			}
 		}
 	}
+	for i := range chosen {
+		for _, item := range chosen[i].Items {
+			var low sql.NullInt64
+			if err := a.DB.QueryRowContext(ctx, `SELECT MIN(price_cents) FROM demo_price_snapshots WHERE sku_id=? AND observed_on>=UTC_DATE()-INTERVAL 29 DAY`, item.SKUID).Scan(&low); err != nil {
+				return nil, err
+			}
+			if low.Valid && low.Int64 > 0 {
+				chosen[i].Reasons = append(chosen[i].Reasons, fmt.Sprintf("%s 的模拟30天轨迹低点 ¥%.2f，当前模拟报价 ¥%.2f；不代表淘宝历史价格", item.Title, float64(low.Int64)/100, float64(item.UnitPriceCents)/100))
+			}
+		}
+	}
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -291,6 +336,37 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	}
 	_, _ = a.DB.ExecContext(ctx, "INSERT INTO guide_tool_runs(session_id,tool_name,input_summary,result_summary,duration_ms) VALUES(?,'CheckCompatibility',?,?,0)", sid, mustJSON(map[string]any{"combinations": len(combos)}), mustJSON(map[string]any{"valid": len(valid), "returned": len(chosen)}))
 	return chosen, nil
+}
+
+func pruneCombos(combos [][]domain.SKU, budget int64, limit int) [][]domain.SKU {
+	priced := make([][]domain.SKU, 0, len(combos))
+	for _, combo := range combos {
+		var amount int64
+		for _, sku := range combo {
+			amount += sku.PriceCents
+		}
+		if amount <= budget && domain.CheckCompatibility(combo).Status == domain.Supported {
+			priced = append(priced, combo)
+		}
+	}
+	if len(priced) <= limit {
+		return priced
+	}
+	sort.Slice(priced, func(i, j int) bool { return comboPrice(priced[i]) < comboPrice(priced[j]) })
+	selected := make([][]domain.SKU, 0, limit)
+	for i := 0; i < limit; i++ {
+		index := i * (len(priced) - 1) / (limit - 1)
+		selected = append(selected, priced[index])
+	}
+	return selected
+}
+
+func comboPrice(items []domain.SKU) int64 {
+	var total int64
+	for _, sku := range items {
+		total += sku.PriceCents
+	}
+	return total
 }
 
 func preferenceScore(p proposal, intent domain.Intent) int64 {

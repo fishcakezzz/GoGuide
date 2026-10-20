@@ -7,20 +7,32 @@ import (
 )
 
 type Specs struct {
-	MemoryGB       int      `json:"memory_gb,omitempty"`
-	StorageGB      int      `json:"storage_gb,omitempty"`
-	WeightGrams    int      `json:"weight_grams,omitempty"`
-	VideoOut       []string `json:"video_out,omitempty"`
-	VideoIn        []string `json:"video_in,omitempty"`
-	Width          int      `json:"width,omitempty"`
-	Height         int      `json:"height,omitempty"`
-	RefreshHz      int      `json:"refresh_hz,omitempty"`
-	MaxWidth       int      `json:"max_width,omitempty"`
-	MaxHeight      int      `json:"max_height,omitempty"`
-	MaxRefreshHz   int      `json:"max_refresh_hz,omitempty"`
-	PDOutputW      int      `json:"pd_output_w,omitempty"`
-	RequiredPowerW int      `json:"required_power_w,omitempty"`
-	USBCCanCharge  *bool    `json:"usb_c_charging,omitempty"`
+	MemoryGB             int      `json:"memory_gb,omitempty"`
+	MemoryType           string   `json:"memory_type,omitempty"`
+	MemorySpeedMT        int      `json:"memory_speed_mt,omitempty"`
+	StorageGB            int      `json:"storage_gb,omitempty"`
+	StorageInterface     string   `json:"storage_interface,omitempty"`
+	Socket               string   `json:"socket,omitempty"`
+	SupportedSockets     []string `json:"supported_sockets,omitempty"`
+	FormFactor           string   `json:"form_factor,omitempty"`
+	SupportedFormFactors []string `json:"supported_form_factors,omitempty"`
+	GPUVRAMGB            int      `json:"gpu_vram_gb,omitempty"`
+	GPULengthMM          int      `json:"gpu_length_mm,omitempty"`
+	MaxGPULengthMM       int      `json:"max_gpu_length_mm,omitempty"`
+	CoolerHeightMM       int      `json:"cooler_height_mm,omitempty"`
+	MaxCoolerHeightMM    int      `json:"max_cooler_height_mm,omitempty"`
+	WeightGrams          int      `json:"weight_grams,omitempty"`
+	VideoOut             []string `json:"video_out,omitempty"`
+	VideoIn              []string `json:"video_in,omitempty"`
+	Width                int      `json:"width,omitempty"`
+	Height               int      `json:"height,omitempty"`
+	RefreshHz            int      `json:"refresh_hz,omitempty"`
+	MaxWidth             int      `json:"max_width,omitempty"`
+	MaxHeight            int      `json:"max_height,omitempty"`
+	MaxRefreshHz         int      `json:"max_refresh_hz,omitempty"`
+	PDOutputW            int      `json:"pd_output_w,omitempty"`
+	RequiredPowerW       int      `json:"required_power_w,omitempty"`
+	USBCCanCharge        *bool    `json:"usb_c_charging,omitempty"`
 }
 
 type SKU struct {
@@ -43,16 +55,21 @@ type SKU struct {
 }
 
 type Intent struct {
-	BudgetCents     int64    `json:"budget_cents"`
-	Categories      []string `json:"categories"`
-	UseCase         string   `json:"use_case"`
-	Brand           string   `json:"brand,omitempty"`
-	MinMemoryGB     int      `json:"min_memory_gb,omitempty"`
-	RequireOneCable bool     `json:"require_one_cable,omitempty"`
-	Hard            []string `json:"hard"`
-	Soft            []string `json:"soft"`
-	LockedSKUs      []int64  `json:"locked_skus"`
-	Questions       int      `json:"questions"`
+	BudgetCents      int64    `json:"budget_cents"`
+	Categories       []string `json:"categories"`
+	UseCase          string   `json:"use_case"`
+	Brand            string   `json:"brand,omitempty"`
+	MinMemoryGB      int      `json:"min_memory_gb,omitempty"`
+	MemoryType       string   `json:"memory_type,omitempty"`
+	MinMemorySpeedMT int      `json:"min_memory_speed_mt,omitempty"`
+	MinStorageGB     int      `json:"min_storage_gb,omitempty"`
+	MinGPUVRAMGB     int      `json:"min_gpu_vram_gb,omitempty"`
+	MinRefreshHz     int      `json:"min_refresh_hz,omitempty"`
+	RequireOneCable  bool     `json:"require_one_cable,omitempty"`
+	Hard             []string `json:"hard"`
+	Soft             []string `json:"soft"`
+	LockedSKUs       []int64  `json:"locked_skus"`
+	Questions        int      `json:"questions"`
 }
 
 type Compatibility struct {
@@ -66,7 +83,23 @@ const (
 	Unknown     = "UNKNOWN"
 )
 
+var CategoryNames = map[string]string{
+	"laptop": "笔记本", "monitor": "显示器", "dock": "扩展坞",
+	"ram": "内存条", "gpu": "显卡", "storage": "硬盘", "cpu": "CPU",
+	"cooler": "散热器", "motherboard": "主板", "case": "机箱",
+	"keyboard": "键盘", "headset": "耳机",
+}
+
+func ValidCategory(category string) bool {
+	_, ok := CategoryNames[category]
+	return ok
+}
+
 func CheckCompatibility(items []SKU) Compatibility {
+	pc := checkPCCompatibility(items)
+	if pc.Status != Supported {
+		return pc
+	}
 	var laptop, monitor, dock *SKU
 	for i := range items {
 		switch items[i].Category {
@@ -79,7 +112,10 @@ func CheckCompatibility(items []SKU) Compatibility {
 		}
 	}
 	if laptop == nil || monitor == nil {
-		return Compatibility{Status: Supported, Reasons: []string{"无需检查笔记本与显示器连接"}}
+		if len(pc.Reasons) == 0 {
+			pc.Reasons = []string{"当前选择没有需要交叉验证的配件"}
+		}
+		return pc
 	}
 	if len(laptop.Specs.VideoOut) == 0 || len(monitor.Specs.VideoIn) == 0 {
 		return Compatibility{Status: Unknown, Reasons: []string{"缺少视频接口协议参数"}}
@@ -127,7 +163,81 @@ func CheckCompatibility(items []SKU) Compatibility {
 			return Compatibility{Status: Unsupported, Reasons: []string{"笔记本输出能力不足以驱动显示器"}}
 		}
 	}
-	return Compatibility{Status: Supported, Reasons: []string{"视频协议、分辨率、刷新率与供电要求均通过结构化数据检查"}}
+	return Compatibility{Status: Supported, Reasons: append(pc.Reasons, "视频协议、分辨率、刷新率与供电要求均通过结构化数据检查")}
+}
+
+func checkPCCompatibility(items []SKU) Compatibility {
+	selected := map[string]*SKU{}
+	for i := range items {
+		selected[items[i].Category] = &items[i]
+	}
+	reasons := []string{}
+	checkEqual := func(a, b, field, left, right string) *Compatibility {
+		if a == "" || b == "" {
+			return &Compatibility{Status: Unknown, Reasons: []string{left + "与" + right + "缺少" + field + "参数"}}
+		}
+		if !strings.EqualFold(a, b) {
+			return &Compatibility{Status: Unsupported, Reasons: []string{left + "与" + right + "的" + field + "不匹配"}}
+		}
+		reasons = append(reasons, left+"与"+right+"的"+field+"匹配")
+		return nil
+	}
+	if cpu, board := selected["cpu"], selected["motherboard"]; cpu != nil && board != nil {
+		if result := checkEqual(cpu.Specs.Socket, board.Specs.Socket, "CPU 插槽", "CPU", "主板"); result != nil {
+			return *result
+		}
+	}
+	if ram, board := selected["ram"], selected["motherboard"]; ram != nil && board != nil {
+		if result := checkEqual(ram.Specs.MemoryType, board.Specs.MemoryType, "内存代际", "内存", "主板"); result != nil {
+			return *result
+		}
+	}
+	if cooler, cpu := selected["cooler"], selected["cpu"]; cooler != nil && cpu != nil {
+		if cpu.Specs.Socket == "" || len(cooler.Specs.SupportedSockets) == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"散热器与 CPU 缺少插槽参数"}}
+		}
+		if !containsFold(cooler.Specs.SupportedSockets, cpu.Specs.Socket) {
+			return Compatibility{Status: Unsupported, Reasons: []string{"散热器不支持 CPU 插槽 " + cpu.Specs.Socket}}
+		}
+		reasons = append(reasons, "散热器支持 CPU 插槽 "+cpu.Specs.Socket)
+	}
+	if chassis, board := selected["case"], selected["motherboard"]; chassis != nil && board != nil {
+		if board.Specs.FormFactor == "" || len(chassis.Specs.SupportedFormFactors) == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"机箱与主板缺少尺寸参数"}}
+		}
+		if !containsFold(chassis.Specs.SupportedFormFactors, board.Specs.FormFactor) {
+			return Compatibility{Status: Unsupported, Reasons: []string{"机箱不支持主板尺寸 " + board.Specs.FormFactor}}
+		}
+		reasons = append(reasons, "机箱支持主板尺寸 "+board.Specs.FormFactor)
+	}
+	if chassis, gpu := selected["case"], selected["gpu"]; chassis != nil && gpu != nil {
+		if chassis.Specs.MaxGPULengthMM == 0 || gpu.Specs.GPULengthMM == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"机箱与显卡缺少长度参数"}}
+		}
+		if gpu.Specs.GPULengthMM > chassis.Specs.MaxGPULengthMM {
+			return Compatibility{Status: Unsupported, Reasons: []string{"显卡长度超过机箱限长"}}
+		}
+		reasons = append(reasons, "显卡长度在机箱限长内")
+	}
+	if chassis, cooler := selected["case"], selected["cooler"]; chassis != nil && cooler != nil {
+		if chassis.Specs.MaxCoolerHeightMM == 0 || cooler.Specs.CoolerHeightMM == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"机箱与散热器缺少高度参数"}}
+		}
+		if cooler.Specs.CoolerHeightMM > chassis.Specs.MaxCoolerHeightMM {
+			return Compatibility{Status: Unsupported, Reasons: []string{"散热器高度超过机箱限高"}}
+		}
+		reasons = append(reasons, "散热器高度在机箱限高内")
+	}
+	return Compatibility{Status: Supported, Reasons: reasons}
+}
+
+func containsFold(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(value, wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 func overlap(a, b []string) bool {

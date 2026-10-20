@@ -24,3 +24,35 @@ func TestCheckCompatibility(t *testing.T) {
 		t.Fatalf("laptop output limit ignored: %+v", got)
 	}
 }
+
+func TestPCPartCompatibility(t *testing.T) {
+	cpu := SKU{Category: "cpu", Specs: Specs{Socket: "LGA1700"}}
+	board := SKU{Category: "motherboard", Specs: Specs{Socket: "LGA1700", MemoryType: "DDR5", FormFactor: "MATX"}}
+	ram := SKU{Category: "ram", Specs: Specs{MemoryType: "DDR5"}}
+	cooler := SKU{Category: "cooler", Specs: Specs{SupportedSockets: []string{"LGA1700"}, CoolerHeightMM: 155}}
+	gpu := SKU{Category: "gpu", Specs: Specs{GPULengthMM: 320}}
+	chassis := SKU{Category: "case", Specs: Specs{SupportedFormFactors: []string{"MATX"}, MaxGPULengthMM: 350, MaxCoolerHeightMM: 160}}
+	items := []SKU{cpu, board, ram, cooler, gpu, chassis}
+	if got := CheckCompatibility(items); got.Status != Supported {
+		t.Fatalf("matching build: %+v", got)
+	}
+	items[1].Specs.Socket = "AM5"
+	if got := CheckCompatibility(items); got.Status != Unsupported {
+		t.Fatalf("CPU socket mismatch: %+v", got)
+	}
+	items[1].Specs.Socket = "LGA1700"
+	items[2].Specs.MemoryType = "DDR4"
+	if got := CheckCompatibility(items); got.Status != Unsupported {
+		t.Fatalf("RAM generation mismatch: %+v", got)
+	}
+	items[2].Specs.MemoryType = "DDR5"
+	items[4].Specs.GPULengthMM = 360
+	if got := CheckCompatibility(items); got.Status != Unsupported {
+		t.Fatalf("GPU length mismatch: %+v", got)
+	}
+	items[4].Specs.GPULengthMM = 320
+	items[5].Specs.MaxCoolerHeightMM = 0
+	if got := CheckCompatibility(items); got.Status != Unknown {
+		t.Fatalf("missing case height should stay unknown: %+v", got)
+	}
+}
