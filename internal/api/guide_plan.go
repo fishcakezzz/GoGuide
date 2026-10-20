@@ -68,6 +68,10 @@ func (a *Server) guideMessage(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "invalid_intent", "")
 		return
 	}
+	if a.Guide.Model == nil || a.Guide.InitErr != nil {
+		fail(w, http.StatusServiceUnavailable, "model_not_configured", "智能导购需要配置 DEEPSEEK_API_KEY，启动 Go API 后才可使用")
+		return
+	}
 	intent, err := a.Guide.extract(r.Context(), in.Text, old)
 	if err != nil {
 		logErr(r, err)

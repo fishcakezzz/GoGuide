@@ -19,6 +19,7 @@ func TestEinoIntentExtraction(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "chatcmpl-test", "object": "chat.completion", "created": 1, "model": "test-model", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": `{"budget_cents":800000,"categories":["laptop","monitor","dock"],"use_case":"编程","require_one_cable":true}`}, "finish_reason": "stop"}}})
 	}))
 	defer server.Close()
+	t.Setenv("DEEPSEEK_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("OPENAI_MODEL", "test-model")
 	t.Setenv("OPENAI_BASE_URL", server.URL+"/v1")
@@ -36,8 +37,32 @@ func TestEinoIntentExtraction(t *testing.T) {
 }
 
 func TestUnknownHardConditionFailsClosed(t *testing.T) {
-	intent := parseLocal("预算 8000 元，买笔记本和显示器，必须触屏", domain.Intent{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": `{"budget_cents":800000,"categories":["laptop","monitor"],"hard":["必须触屏"]}`}, "finish_reason": "stop"}}})
+	}))
+	defer server.Close()
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_MODEL", "test-model")
+	t.Setenv("OPENAI_BASE_URL", server.URL+"/v1")
+	intent, err := NewGuide(nil).extract(context.Background(), "预算 8000 元，买笔记本和显示器，必须触屏", domain.Intent{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(intent.Hard) == 0 {
 		t.Fatal("unsupported hard condition was dropped")
+	}
+}
+
+func TestGuideRequiresModel(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "")
+	g := NewGuide(nil)
+	if g.Mode != "unavailable" || g.Model != nil {
+		t.Fatalf("guide should be unavailable without model: %+v", g)
+	}
+	if _, err := g.extract(context.Background(), "预算1W买笔记本加显示器", domain.Intent{}); err == nil {
+		t.Fatal("guide silently accepted request without model")
 	}
 }

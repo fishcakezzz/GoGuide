@@ -38,7 +38,7 @@ go run ./cmd/worker
 
 如果页面显示“Failed to fetch”或“无法连接 GoGuide API”，先检查 `http://127.0.0.1:8080/healthz` 是否返回 `{"status":"ok"}`。没有响应时，检查 MySQL、迁移和 `cmd/api` 是否已启动，并确认 `GOGUIDE_ADDR` 指向 8080 端口。网页由 Go API 提供；请从 `http://127.0.0.1:8080/` 访问，不要直接打开 `internal/api/web/index.html`。如果使用独立前端服务器，还需要把 `/v1/*` 代理到 Go API。
 
-配置 `DEEPSEEK_API_KEY` 后，导购需求提取会通过 Eino 调用 DeepSeek V4.1 Flash（API 标识 `deepseek-flash`，默认地址 `https://api.deepseek.com`）。密钥只放在本机环境变量或不入库的 `.env` 中。也可使用通用的 `OPENAI_API_KEY`、`OPENAI_MODEL` 与 `OPENAI_BASE_URL` 接入其他兼容服务。未配置密钥时 `/v1/guide` 返回 `mode: "rules"`，使用有限的本地规则演示交易和方案校验；它不是 AI 效果替代品。
+智能导购必须配置 `DEEPSEEK_API_KEY`，通过 Eino 调用 DeepSeek V4.1 Flash（API 标识 `deepseek-flash`，默认地址 `https://api.deepseek.com`）拆解需求。密钥只放在本机环境变量或不入库的 `.env` 中。也可使用通用的 `OPENAI_API_KEY`、`OPENAI_MODEL` 与 `OPENAI_BASE_URL` 接入其他兼容服务。未配置模型时导购接口返回 503 和配置提示；商品、购物车和交易接口仍可使用。Go 后端负责商品查询、价格库存与兼容性核验。
 
 ## 关键业务路径
 
@@ -59,4 +59,4 @@ go vet ./...
 
 设置 `GOGUIDE_TEST_DSN` 后，`go test ./... -count=1` 还会运行 MySQL 集成测试；不设置时这些测试会跳过。API 启动后可运行 `./scripts/smoke.ps1` 验证注册、订单、支付和导购加购。PRD 的 A01–A16 是目标验收项，不能把现有测试通过等同于全部验收通过。尚未完成的事项请看 `STATUS.md` 和 `QUESTIONS.md`。
 
-固定导购任务集在 `eval/tasks.json`，使用**独立、仅导入演示种子商品**的数据库启动 API 后运行 `./scripts/eval.ps1`。脚本逐项检查是否应生成方案、预算与品类、方案金额、兼容性状态和商品证据。同库运行集成测试会插入测试夹具商品，影响候选集和评测结果。规则模式记录在 `eval/results.json`；DeepSeek V4.1 Flash 实测记录在 `eval/results-deepseek.json`，运行时可用 `-Output` 指定文件。两者在固定的 30 项演示任务上均为 30/30；任务集规模有限，不能据此声称真实场景准确率。实际代码路径和事务边界见 `docs/ARCHITECTURE.md`。
+固定导购任务集在 `eval/tasks.json`，使用**独立、仅导入演示种子商品**的数据库启动 API 后运行 `./scripts/eval.ps1`。脚本逐项检查是否应生成方案、预算与品类、方案金额、兼容性状态和商品证据。同库运行集成测试会插入测试夹具商品，影响候选集和评测结果。DeepSeek V4.1 Flash 实测记录在 `eval/results-deepseek.json`，运行时可用 `-Output` 指定文件。此前固定的 30 项演示任务为 30/30；任务集规模有限，不能据此声称真实场景准确率。实际代码路径和事务边界见 `docs/ARCHITECTURE.md`。
