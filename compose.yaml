@@ -1,0 +1,61 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: goguide
+      MYSQL_USER: goguide
+      MYSQL_PASSWORD: goguide
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build: .
+    command: ["/app/bin/migrate"]
+    environment:
+      GOGUIDE_DSN: "goguide:goguide@tcp(mysql:3306)/goguide?parseTime=true&charset=utf8mb4"
+    depends_on:
+      mysql:
+        condition: service_healthy
+  seed:
+    build: .
+    command: ["/app/bin/seed"]
+    environment:
+      GOGUIDE_DSN: "goguide:goguide@tcp(mysql:3306)/goguide?parseTime=true&charset=utf8mb4"
+      GOGUIDE_ADMIN_EMAIL: "${GOGUIDE_ADMIN_EMAIL:-}"
+      GOGUIDE_ADMIN_PASSWORD: "${GOGUIDE_ADMIN_PASSWORD:-}"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+  api:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      GOGUIDE_DSN: "goguide:goguide@tcp(mysql:3306)/goguide?parseTime=true&charset=utf8mb4"
+      GOGUIDE_ADDR: ":8080"
+      GOGUIDE_JWT_SECRET: "${GOGUIDE_JWT_SECRET:?set GOGUIDE_JWT_SECRET in .env}"
+      GOGUIDE_PAYMENT_SECRET: "${GOGUIDE_PAYMENT_SECRET:?set GOGUIDE_PAYMENT_SECRET in .env}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+  worker:
+    build: .
+    command: ["/app/bin/worker"]
+    environment:
+      GOGUIDE_DSN: "goguide:goguide@tcp(mysql:3306)/goguide?parseTime=true&charset=utf8mb4"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+volumes:
+  mysql_data:
