@@ -4,6 +4,12 @@ Go 后端主导的任务式导购与模拟交易项目。首版使用 go-zero RE
 
 > 当前商品、价格、库存和支付均为演示数据，不能在淘宝或其他平台真实购买。项目不包含淘宝爬虫。
 
+## 项目文档
+
+- [产品需求 PRD](docs/GoGuide_PRD.md)：原始需求与 A01–A16 验收目标。
+- [技术方案与实现分析](docs/GoGuide_Technical_Design.md)：按当前代码整理的技术选型、交易一致性和 Agent 边界。
+- [实际架构速览](docs/ARCHITECTURE.md)：进程、模块和当前容量边界。
+
 ## 启动
 
 推荐使用 Docker Compose，一次启动 MySQL 8.4、迁移、种子数据、API 和 Worker；也可用 Go 1.26+ 与独立 MySQL 8.4 手动运行。
