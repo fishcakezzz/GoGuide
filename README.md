@@ -36,6 +36,8 @@ go run ./cmd/worker
 
 访问 `http://localhost:8080/`。`cmd/seed` 可重复运行，创建十个模拟 SKU；若设置 `GOGUIDE_ADMIN_EMAIL` 和 `GOGUIDE_ADMIN_PASSWORD`，同时创建管理员账号。修改种子数据需要通过管理接口，不应反复覆盖正在交易的库存。
 
+如果页面显示“Failed to fetch”或“无法连接 GoGuide API”，先检查 `http://127.0.0.1:8080/healthz` 是否返回 `{"status":"ok"}`。没有响应时，检查 MySQL、迁移和 `cmd/api` 是否已启动，并确认 `GOGUIDE_ADDR` 指向 8080 端口。网页由 Go API 提供；请从 `http://127.0.0.1:8080/` 访问，不要直接打开 `internal/api/web/index.html`。如果使用独立前端服务器，还需要把 `/v1/*` 代理到 Go API。
+
 配置 `DEEPSEEK_API_KEY` 后，导购需求提取会通过 Eino 调用 DeepSeek V4.1 Flash（API 标识 `deepseek-flash`，默认地址 `https://api.deepseek.com`）。密钥只放在本机环境变量或不入库的 `.env` 中。也可使用通用的 `OPENAI_API_KEY`、`OPENAI_MODEL` 与 `OPENAI_BASE_URL` 接入其他兼容服务。未配置密钥时 `/v1/guide` 返回 `mode: "rules"`，使用有限的本地规则演示交易和方案校验；它不是 AI 效果替代品。
 
 ## 关键业务路径
