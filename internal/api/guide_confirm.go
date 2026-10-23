@@ -35,7 +35,8 @@ func (a *Server) confirmProposal(w http.ResponseWriter, r *http.Request) {
 	var raw []byte
 	var amount int64
 	var confirmed sql.NullTime
-	err = tx.QueryRowContext(r.Context(), "SELECT session_id,intent_version,proposal_version,items_json,amount_cents,confirmed_at FROM guide_proposals WHERE id=? AND user_id=? FOR UPDATE", id, current(r).UserID).Scan(&sid, &intentVersion, &proposalVersion, &raw, &amount, &confirmed)
+	var status string
+	err = tx.QueryRowContext(r.Context(), "SELECT session_id,intent_version,proposal_version,items_json,amount_cents,confirmed_at,status FROM guide_proposals WHERE id=? AND user_id=? FOR UPDATE", id, current(r).UserID).Scan(&sid, &intentVersion, &proposalVersion, &raw, &amount, &confirmed, &status)
 	if err == sql.ErrNoRows {
 		fail(w, 404, "not_found", "")
 		return
@@ -70,7 +71,7 @@ func (a *Server) confirmProposal(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "internal", "")
 		return
 	}
-	if activeVersion != intentVersion {
+	if activeVersion != intentVersion || status != "ACTIVE" {
 		fail(w, 409, "stale_proposal", "方案已更新，请确认最新版本")
 		return
 	}
@@ -84,13 +85,17 @@ func (a *Server) confirmProposal(w http.ResponseWriter, r *http.Request) {
 	for _, it := range items {
 		var s domain.SKU
 		var specs []byte
-		err = tx.QueryRowContext(r.Context(), `SELECT s.id,s.product_id,p.category,p.brand,p.title,s.label,s.specs,s.price_cents,s.price_version,s.available,(s.active AND p.active) FROM skus s JOIN products p ON p.id=s.product_id WHERE s.id=? FOR UPDATE`, it.SKUID).Scan(&s.ID, &s.ProductID, &s.Category, &s.Brand, &s.Title, &s.Label, &specs, &s.PriceCents, &s.PriceVersion, &s.Available, &s.Active)
+		err = tx.QueryRowContext(r.Context(), `SELECT s.id,s.product_id,p.category,p.brand,p.title,s.label,s.specs,s.price_cents,s.price_version,s.stock_version,s.available,(s.active AND p.active) FROM skus s JOIN products p ON p.id=s.product_id WHERE s.id=? FOR UPDATE`, it.SKUID).Scan(&s.ID, &s.ProductID, &s.Category, &s.Brand, &s.Title, &s.Label, &specs, &s.PriceCents, &s.PriceVersion, &s.StockVersion, &s.Available, &s.Active)
 		if err != nil || !s.Active || s.Available < it.Quantity {
 			fail(w, 409, "sku_changed", "商品已下架或库存不足，请重规划")
 			return
 		}
 		if s.PriceCents != it.UnitPriceCents || s.PriceVersion != it.PriceVersion {
 			fail(w, 409, "price_changed", "商品价格已变化，请重规划")
+			return
+		}
+		if it.StockVersion != 0 && s.StockVersion != it.StockVersion {
+			fail(w, 409, "stock_changed", "商品库存已变化，请重规划")
 			return
 		}
 		if json.Unmarshal(specs, &s.Specs) != nil {

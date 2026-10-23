@@ -12,7 +12,12 @@ type Specs struct {
 	MemorySpeedMT        int      `json:"memory_speed_mt,omitempty"`
 	StorageGB            int      `json:"storage_gb,omitempty"`
 	StorageInterface     string   `json:"storage_interface,omitempty"`
+	StorageInterfaces    []string `json:"storage_interfaces,omitempty"`
 	Socket               string   `json:"socket,omitempty"`
+	CPUModel             string   `json:"cpu_model,omitempty"`
+	SupportedCPUModels   []string `json:"supported_cpu_models,omitempty"`
+	MaxPowerW            int      `json:"max_power_w,omitempty"`
+	PSUPowerW            int      `json:"psu_power_w,omitempty"`
 	SupportedSockets     []string `json:"supported_sockets,omitempty"`
 	FormFactor           string   `json:"form_factor,omitempty"`
 	SupportedFormFactors []string `json:"supported_form_factors,omitempty"`
@@ -36,22 +41,25 @@ type Specs struct {
 }
 
 type SKU struct {
-	ID           int64  `json:"id"`
-	ProductID    int64  `json:"product_id"`
-	Category     string `json:"category"`
-	Brand        string `json:"brand"`
-	Title        string `json:"title"`
-	Label        string `json:"label"`
-	Description  string `json:"description,omitempty"`
-	ImageURL     string `json:"image_url,omitempty"`
-	SourceKind   string `json:"source_kind,omitempty"`
-	SourceURL    string `json:"source_url,omitempty"`
-	Specs        Specs  `json:"specs"`
-	PriceCents   int64  `json:"price_cents"`
-	PriceVersion int64  `json:"price_version"`
-	Available    int    `json:"available"`
-	Active       bool   `json:"active"`
-	ObservedAt   string `json:"observed_at,omitempty"`
+	ID           int64      `json:"id"`
+	ProductID    int64      `json:"product_id"`
+	Category     string     `json:"category"`
+	Brand        string     `json:"brand"`
+	Title        string     `json:"title"`
+	Label        string     `json:"label"`
+	Description  string     `json:"description,omitempty"`
+	ImageURL     string     `json:"image_url,omitempty"`
+	SourceKind   string     `json:"source_kind,omitempty"`
+	SourceURL    string     `json:"source_url,omitempty"`
+	Specs        Specs      `json:"specs"`
+	PriceCents   int64      `json:"price_cents"`
+	PriceVersion int64      `json:"price_version"`
+	StockVersion int64      `json:"stock_version"`
+	Available    int        `json:"available"`
+	Active       bool       `json:"active"`
+	ObservedAt   string     `json:"observed_at,omitempty"`
+	Benchmark    *Benchmark `json:"benchmark,omitempty"`
+	BrandTier    string     `json:"brand_tier,omitempty"`
 }
 
 type Intent struct {
@@ -59,6 +67,8 @@ type Intent struct {
 	Categories       []string `json:"categories"`
 	UseCase          string   `json:"use_case"`
 	Brand            string   `json:"brand,omitempty"`
+	CPUModel         string   `json:"cpu_model,omitempty"`
+	GPUModel         string   `json:"gpu_model,omitempty"`
 	MinMemoryGB      int      `json:"min_memory_gb,omitempty"`
 	MemoryType       string   `json:"memory_type,omitempty"`
 	MinMemorySpeedMT int      `json:"min_memory_speed_mt,omitempty"`
@@ -88,6 +98,7 @@ var CategoryNames = map[string]string{
 	"ram": "内存条", "gpu": "显卡", "storage": "硬盘", "cpu": "CPU",
 	"cooler": "散热器", "motherboard": "主板", "case": "机箱",
 	"keyboard": "键盘", "headset": "耳机",
+	"psu": "电源",
 }
 
 func ValidCategory(category string) bool {
@@ -186,6 +197,13 @@ func checkPCCompatibility(items []SKU) Compatibility {
 		if result := checkEqual(cpu.Specs.Socket, board.Specs.Socket, "CPU 插槽", "CPU", "主板"); result != nil {
 			return *result
 		}
+		if cpu.Specs.CPUModel == "" || len(board.Specs.SupportedCPUModels) == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"缺少 CPU 型号或主板 BIOS 支持列表"}}
+		}
+		if !containsFold(board.Specs.SupportedCPUModels, cpu.Specs.CPUModel) {
+			return Compatibility{Status: Unsupported, Reasons: []string{"主板当前演示 BIOS 支持列表不含 " + cpu.Specs.CPUModel}}
+		}
+		reasons = append(reasons, "主板演示 BIOS 支持列表包含 "+cpu.Specs.CPUModel)
 	}
 	if ram, board := selected["ram"], selected["motherboard"]; ram != nil && board != nil {
 		if result := checkEqual(ram.Specs.MemoryType, board.Specs.MemoryType, "内存代际", "内存", "主板"); result != nil {
@@ -227,6 +245,27 @@ func checkPCCompatibility(items []SKU) Compatibility {
 			return Compatibility{Status: Unsupported, Reasons: []string{"散热器高度超过机箱限高"}}
 		}
 		reasons = append(reasons, "散热器高度在机箱限高内")
+	}
+	if board, storage := selected["motherboard"], selected["storage"]; board != nil && storage != nil {
+		if storage.Specs.StorageInterface == "" || len(board.Specs.StorageInterfaces) == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"缺少主板存储接口或硬盘接口参数"}}
+		}
+		if !containsFold(board.Specs.StorageInterfaces, storage.Specs.StorageInterface) {
+			return Compatibility{Status: Unsupported, Reasons: []string{"主板不支持硬盘接口 " + storage.Specs.StorageInterface}}
+		}
+		reasons = append(reasons, "主板支持硬盘接口 "+storage.Specs.StorageInterface)
+	}
+	if psu := selected["psu"]; psu != nil && (selected["cpu"] != nil || selected["gpu"] != nil) {
+		cpu, gpu := selected["cpu"], selected["gpu"]
+		if cpu == nil || gpu == nil || cpu.Specs.MaxPowerW == 0 || gpu.Specs.MaxPowerW == 0 || psu.Specs.PSUPowerW == 0 {
+			return Compatibility{Status: Unknown, Reasons: []string{"缺少 CPU、显卡或电源功率参数"}}
+		}
+		// 100 W is an explicit demo allowance for board, RAM, storage and fans.
+		required := (cpu.Specs.MaxPowerW + gpu.Specs.MaxPowerW + 100) * 13 / 10
+		if psu.Specs.PSUPowerW < required {
+			return Compatibility{Status: Unsupported, Reasons: []string{fmt.Sprintf("电源 %dW 低于演示估算需求 %dW", psu.Specs.PSUPowerW, required)}}
+		}
+		reasons = append(reasons, fmt.Sprintf("电源 %dW 满足演示估算需求 %dW；仍需核对供电线材", psu.Specs.PSUPowerW, required))
 	}
 	return Compatibility{Status: Supported, Reasons: reasons}
 }

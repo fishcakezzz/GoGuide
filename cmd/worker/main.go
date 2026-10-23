@@ -30,6 +30,22 @@ func main() {
 		} else if n > 0 {
 			log.Printf("closed %d due orders", n)
 		}
+		replanCtx, replanCancel := context.WithTimeout(ctx, 40*time.Second)
+		changed, replanErr := api.ReconcileProposals(replanCtx, db, 25)
+		replanCancel()
+		if replanErr != nil {
+			log.Printf("guide replan failed: %v", replanErr)
+		} else if changed > 0 {
+			log.Printf("replanned %d guide sessions", changed)
+		}
+		watchCtx, watchCancel := context.WithTimeout(ctx, 4*time.Second)
+		alerts, watchErr := api.CheckPriceWatches(watchCtx, db)
+		watchCancel()
+		if watchErr != nil {
+			log.Printf("price watch check failed: %v", watchErr)
+		} else if alerts > 0 {
+			log.Printf("created %d simulated price watch events", alerts)
+		}
 		select {
 		case <-ctx.Done():
 			return

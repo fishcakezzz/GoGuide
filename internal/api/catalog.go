@@ -22,7 +22,7 @@ type searchFilter struct {
 }
 
 func (a *Server) searchSKUs(ctx context.Context, f searchFilter) ([]domain.SKU, error) {
-	q := `SELECT s.id,s.product_id,p.category,p.brand,p.title,s.label,p.description,p.image_url,p.source_kind,p.source_url,s.specs,s.price_cents,s.price_version,s.available,s.active
+	q := `SELECT s.id,s.product_id,p.category,p.brand,p.title,s.label,p.description,p.image_url,p.source_kind,p.source_url,s.specs,s.price_cents,s.price_version,s.stock_version,s.available,s.active
  FROM skus s JOIN products p ON p.id=s.product_id WHERE s.active=TRUE AND p.active=TRUE`
 	args := []any{}
 	if f.Category != "" {
@@ -79,7 +79,7 @@ func (a *Server) searchSKUs(ctx context.Context, f searchFilter) ([]domain.SKU, 
 		var s domain.SKU
 		var raw []byte
 		var active bool
-		if err := rows.Scan(&s.ID, &s.ProductID, &s.Category, &s.Brand, &s.Title, &s.Label, &s.Description, &s.ImageURL, &s.SourceKind, &s.SourceURL, &raw, &s.PriceCents, &s.PriceVersion, &s.Available, &active); err != nil {
+		if err := rows.Scan(&s.ID, &s.ProductID, &s.Category, &s.Brand, &s.Title, &s.Label, &s.Description, &s.ImageURL, &s.SourceKind, &s.SourceURL, &raw, &s.PriceCents, &s.PriceVersion, &s.StockVersion, &s.Available, &active); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(raw, &s.Specs); err != nil {
@@ -87,6 +87,8 @@ func (a *Server) searchSKUs(ctx context.Context, f searchFilter) ([]domain.SKU, 
 		}
 		s.Active = active
 		s.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+		s.Benchmark = domain.BenchmarkFor(s)
+		s.BrandTier = domain.BrandTier(s.Category, s.Brand)
 		out = append(out, s)
 	}
 	return out, rows.Err()
@@ -94,12 +96,14 @@ func (a *Server) searchSKUs(ctx context.Context, f searchFilter) ([]domain.SKU, 
 func (a *Server) findSKU(ctx context.Context, id int64) (domain.SKU, error) {
 	var s domain.SKU
 	var raw []byte
-	err := a.DB.QueryRowContext(ctx, `SELECT s.id,s.product_id,p.category,p.brand,p.title,s.label,p.description,p.image_url,p.source_kind,p.source_url,s.specs,s.price_cents,s.price_version,s.available,s.active AND p.active FROM skus s JOIN products p ON p.id=s.product_id WHERE s.id=?`, id).Scan(&s.ID, &s.ProductID, &s.Category, &s.Brand, &s.Title, &s.Label, &s.Description, &s.ImageURL, &s.SourceKind, &s.SourceURL, &raw, &s.PriceCents, &s.PriceVersion, &s.Available, &s.Active)
+	err := a.DB.QueryRowContext(ctx, `SELECT s.id,s.product_id,p.category,p.brand,p.title,s.label,p.description,p.image_url,p.source_kind,p.source_url,s.specs,s.price_cents,s.price_version,s.stock_version,s.available,s.active AND p.active FROM skus s JOIN products p ON p.id=s.product_id WHERE s.id=?`, id).Scan(&s.ID, &s.ProductID, &s.Category, &s.Brand, &s.Title, &s.Label, &s.Description, &s.ImageURL, &s.SourceKind, &s.SourceURL, &raw, &s.PriceCents, &s.PriceVersion, &s.StockVersion, &s.Available, &s.Active)
 	if err != nil {
 		return s, err
 	}
 	err = json.Unmarshal(raw, &s.Specs)
 	s.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	s.Benchmark = domain.BenchmarkFor(s)
+	s.BrandTier = domain.BrandTier(s.Category, s.Brand)
 	return s, err
 }
 func (a *Server) products(w http.ResponseWriter, r *http.Request) {

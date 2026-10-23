@@ -2,7 +2,7 @@
 
 Go 后端主导的任务式导购与模拟交易项目。首版使用 go-zero REST、MySQL 和独立 Go Worker；Eino 将自然语言购物需求转成结构化条件，Go 代码检索商品并检查预算、库存与兼容性。模型不可用时，普通商品、购物车和交易链路仍可使用。
 
-> 电脑配件名称参考公开第三方商品列表；规格、报价、库存、30 天价格曲线和支付均为本地模拟数据，不能在淘宝或其他平台真实购买。项目没有接入淘宝官方商品或历史价格 API。
+> 电脑配件名称参考公开列表和厂商页面；报价、库存、30 天价格曲线和支付均为本地模拟数据，部分规格亦为演示字段。不能在淘宝或其他平台真实购买。项目没有接入淘宝官方商品或历史价格 API。
 
 ## 项目文档
 
@@ -10,6 +10,7 @@ Go 后端主导的任务式导购与模拟交易项目。首版使用 go-zero RE
 - [技术方案与实现分析](docs/GoGuide_Technical_Design.md)：按当前代码整理的技术选型、交易一致性和 Agent 边界。
 - [实际架构速览](docs/ARCHITECTURE.md)：进程、模块和当前容量边界。
 - [电脑配件演示数据说明](docs/PC_PARTS_DEMO.md)：商品来源、模拟字段、兼容性和价格曲线边界。
+- [方案评分口径](docs/SCORING.md)：CPU/GPU 基准快照、品牌演示档位、加权分与每千元得分。
 
 ## 启动
 
@@ -35,7 +36,7 @@ go run ./cmd/api
 go run ./cmd/worker
 ```
 
-访问 `http://localhost:8080/`。`cmd/seed` 可重复运行，创建原有 10 个 SKU，以及 21 款电脑配件的 63 个模拟报价 SKU，并为后者生成各 30 天模拟价格点；若设置 `GOGUIDE_ADMIN_EMAIL` 和 `GOGUIDE_ADMIN_PASSWORD`，同时创建管理员账号。修改种子数据需要通过管理接口，不应反复覆盖正在交易的库存。
+访问 `http://localhost:8080/`。`cmd/seed` 可重复运行，创建原有 10 个 SKU，以及 26 款电脑配件的 78 个模拟报价 SKU，并为后者生成各 30 天模拟价格点；若设置 `GOGUIDE_ADMIN_EMAIL` 和 `GOGUIDE_ADMIN_PASSWORD`，同时创建管理员账号。修改种子数据需要通过管理接口，不应反复覆盖正在交易的库存。
 
 如果页面显示“Failed to fetch”或“无法连接 GoGuide API”，先检查 `http://127.0.0.1:8080/healthz` 是否返回 `{"status":"ok"}`。没有响应时，检查 MySQL、迁移和 `cmd/api` 是否已启动，并确认 `GOGUIDE_ADDR` 指向 8080 端口。网页由 Go API 提供；请从 `http://127.0.0.1:8080/` 访问，不要直接打开 `internal/api/web/index.html`。如果使用独立前端服务器，还需要把 `/v1/*` 代理到 Go API。
 
@@ -48,8 +49,10 @@ go run ./cmd/worker
 3. 触发模拟支付，预占转已售；取消或超时关单，预占释放。支付与关单通过订单行锁竞争同一状态。
 4. 导购会话保存版本化意图；大模型拆解需求，Go 执行只读检索、预算和配件兼容性校验，最多输出三套带 SKU 价格版本的方案，再由模型基于核验结果解释差异。
 5. 用户确认方案版本、金额与商品清单后幂等加购；正式下单必须再走订单预览。
+6. Worker 监测未确认方案涉及的价格和库存版本；发生变化时将旧版标为失效，创建新方案并记录原因。浏览器“刷新方案状态”可查看最新版本；旧版确认被拒绝。
+7. 商品页可设置模拟目标价，Worker 在当前可售价格达到目标时生成站内提醒记录；同一价格版本重复扫描只记录一次。关闭观察后不再新增记录。
 
-API 入口见 `internal/api/base.go`。每个商品结果带 `source_kind` 和 `observed_at`；电脑配件的 `public_reference_demo` 只表示名称参考第三方公开页面，价格、规格和库存仍为演示数据。`GET /v1/skus/{id}/price-trend` 返回明确标记为 `simulated_scenario` 的 30 天曲线。商品缺少关键兼容参数时返回 `UNKNOWN`，不会作为已验证兼容的组合输出。
+API 入口见 `internal/api/base.go`。每个商品结果带 `source_kind` 和 `observed_at`；电脑配件的 `public_reference_demo` 表示名称参考公开页面，报价和库存为演示数据。CPU/GPU 结果附有基准来源、快照日期及排名，显卡品牌档位明确标为演示偏好。`GET /v1/skus/{id}/price-trend` 返回明确标记为 `simulated_scenario` 的 30 天曲线。商品缺少关键兼容参数时返回 `UNKNOWN`，不会作为已验证兼容的组合输出。
 
 ## 验证
 
@@ -58,6 +61,6 @@ go test ./...
 go vet ./...
 ```
 
-设置 `GOGUIDE_TEST_DSN` 后，`go test ./... -count=1` 还会运行 MySQL 集成测试；不设置时这些测试会跳过。API 启动后可运行 `./scripts/smoke.ps1` 验证注册、订单、支付和导购加购。PRD 的 A01–A16 是目标验收项，不能把现有测试通过等同于全部验收通过。尚未完成的事项请看 `STATUS.md` 和 `QUESTIONS.md`。
+设置 `GOGUIDE_TEST_DSN` 后，`go test ./... -count=1` 还会运行 MySQL 集成测试；不设置时这些测试会跳过。API 与 Worker 启动后可运行 `./scripts/smoke.ps1` 验证交易，再以独立演示数据库和管理员测试账号运行 `./scripts/smoke-replan.ps1 -AdminEmail <邮箱> -AdminPassword <密码>`，验证改价、调库存、两轮重规划和旧方案拒绝。PRD 的 A01–A16 是目标验收项，不能把现有测试通过等同于全部验收通过。尚未完成的事项请看 `STATUS.md` 和 `QUESTIONS.md`。
 
 固定导购任务集在 `eval/tasks.json`，使用**独立、仅导入演示种子商品**的数据库启动 API 后运行 `./scripts/eval.ps1`。脚本逐项检查是否应生成方案、预算与品类、方案金额、兼容性状态和商品证据。同库运行集成测试会插入测试夹具商品，影响候选集和评测结果。DeepSeek V4.1 Flash 实测记录在 `eval/results-deepseek.json`，运行时可用 `-Output` 指定文件。此前固定的 30 项演示任务为 30/30；任务集规模有限，不能据此声称真实场景准确率。实际代码路径和事务边界见 `docs/ARCHITECTURE.md`。

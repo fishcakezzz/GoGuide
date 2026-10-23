@@ -54,6 +54,10 @@ services:
     command: ["/app/bin/worker"]
     environment:
       GOGUIDE_DSN: "goguide:goguide@tcp(mysql:3306)/goguide?parseTime=true&charset=utf8mb4"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
     depends_on:
       seed:
         condition: service_completed_successfully

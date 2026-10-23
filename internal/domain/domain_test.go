@@ -26,15 +26,23 @@ func TestCheckCompatibility(t *testing.T) {
 }
 
 func TestPCPartCompatibility(t *testing.T) {
-	cpu := SKU{Category: "cpu", Specs: Specs{Socket: "LGA1700"}}
-	board := SKU{Category: "motherboard", Specs: Specs{Socket: "LGA1700", MemoryType: "DDR5", FormFactor: "MATX"}}
+	cpu := SKU{Category: "cpu", Specs: Specs{Socket: "LGA1700", CPUModel: "i5-13400F", MaxPowerW: 148}}
+	board := SKU{Category: "motherboard", Specs: Specs{Socket: "LGA1700", MemoryType: "DDR5", FormFactor: "MATX", SupportedCPUModels: []string{"i5-13400F"}, StorageInterfaces: []string{"M.2 NVMe"}}}
 	ram := SKU{Category: "ram", Specs: Specs{MemoryType: "DDR5"}}
 	cooler := SKU{Category: "cooler", Specs: Specs{SupportedSockets: []string{"LGA1700"}, CoolerHeightMM: 155}}
-	gpu := SKU{Category: "gpu", Specs: Specs{GPULengthMM: 320}}
+	gpu := SKU{Category: "gpu", Specs: Specs{GPULengthMM: 320, MaxPowerW: 285}}
 	chassis := SKU{Category: "case", Specs: Specs{SupportedFormFactors: []string{"MATX"}, MaxGPULengthMM: 350, MaxCoolerHeightMM: 160}}
 	items := []SKU{cpu, board, ram, cooler, gpu, chassis}
 	if got := CheckCompatibility(items); got.Status != Supported {
 		t.Fatalf("matching build: %+v", got)
+	}
+	withPSU := append(items, SKU{Category: "psu", Specs: Specs{PSUPowerW: 650}})
+	if got := CheckCompatibility(withPSU); got.Status != Unsupported {
+		t.Fatalf("undersized PSU: %+v", got)
+	}
+	withPSU[len(withPSU)-1].Specs.PSUPowerW = 750
+	if got := CheckCompatibility(withPSU); got.Status != Supported {
+		t.Fatalf("sufficient PSU: %+v", got)
 	}
 	items[1].Specs.Socket = "AM5"
 	if got := CheckCompatibility(items); got.Status != Unsupported {

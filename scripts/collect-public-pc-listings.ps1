@@ -2,7 +2,7 @@ param([string]$Output = 'data/public-listing-captures.json')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $source = Get-Content (Join-Path $root 'cmd/seed/pc_parts.go') -Raw
-$urls = [regex]::Matches($source, 'https://tao\.hooos\.com/[^"\s]+') | ForEach-Object Value | Sort-Object -Unique
+$urls = [regex]::Matches($source, 'https://[^"\s]+') | ForEach-Object Value | Sort-Object -Unique
 $captures = foreach ($url in $urls) {
   try {
     $response = Invoke-WebRequest $url -TimeoutSec 15
@@ -11,12 +11,13 @@ $captures = foreach ($url in $urls) {
     if (-not $title) { $title = [regex]::Match($html, '<h1[^>]*>(.*?)</h1>', 'IgnoreCase,Singleline').Groups[1].Value }
     [pscustomobject]@{
       source_url = $url
+      source_type = if ($url -like 'https://tao.hooos.com/*') { 'third_party_listing' } else { 'manufacturer_page' }
       page_title = [Net.WebUtility]::HtmlDecode(($title -replace '<[^>]+>', '')).Trim()
       http_status = [int]$response.StatusCode
       captured_at = (Get-Date).ToUniversalTime().ToString('o')
     }
   } catch {
-    [pscustomobject]@{source_url=$url;page_title='';http_status=0;captured_at=(Get-Date).ToUniversalTime().ToString('o');error=$_.Exception.Message}
+    [pscustomobject]@{source_url=$url;source_type=if ($url -like 'https://tao.hooos.com/*') { 'third_party_listing' } else { 'manufacturer_page' };page_title='';http_status=0;captured_at=(Get-Date).ToUniversalTime().ToString('o');error=$_.Exception.Message}
   }
   Start-Sleep -Milliseconds 1200
 }

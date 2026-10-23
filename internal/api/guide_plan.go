@@ -19,6 +19,7 @@ type proposalItem struct {
 	Quantity       int    `json:"quantity"`
 	UnitPriceCents int64  `json:"unit_price_cents"`
 	PriceVersion   int64  `json:"price_version"`
+	StockVersion   int64  `json:"stock_version"`
 	Title          string `json:"title"`
 	Label          string `json:"label"`
 	Category       string `json:"category"`
@@ -33,6 +34,8 @@ type proposal struct {
 	Compatibility   domain.Compatibility `json:"compatibility"`
 	Evidence        []domain.SKU         `json:"evidence"`
 	Reasons         []string             `json:"reasons"`
+	Score           domain.PlanScore     `json:"score"`
+	Profile         string               `json:"profile"`
 }
 
 func (a *Server) guideMessage(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +167,7 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	if intent.RequireOneCable && !hasCategory(categories, "dock") {
 		categories = append(categories, "dock")
 	}
-	if len(categories) > 10 {
+	if len(categories) > 13 {
 		return nil, fmt.Errorf("too many categories")
 	}
 	byCategory := map[string][]domain.SKU{}
@@ -176,7 +179,8 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 		}
 		filtered := []domain.SKU{}
 		for _, s := range candidates {
-			if intent.Brand != "" && (len(categories) == 1 || cat == "laptop") && !strings.EqualFold(intent.Brand, s.Brand) {
+			brandApplies := len(categories) == 1 || cat == "laptop" || (cat == "gpu" && domain.BrandTier("gpu", intent.Brand) != "未分层")
+			if intent.Brand != "" && brandApplies && !strings.EqualFold(intent.Brand, s.Brand) {
 				continue
 			}
 			if (cat == "laptop" || cat == "ram") && s.Specs.MemoryGB < intent.MinMemoryGB {
@@ -192,6 +196,12 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 				continue
 			}
 			if cat == "gpu" && s.Specs.GPUVRAMGB < intent.MinGPUVRAMGB {
+				continue
+			}
+			if cat == "gpu" && intent.GPUModel != "" && !strings.Contains(strings.ToLower(s.Title), strings.ToLower(intent.GPUModel)) {
+				continue
+			}
+			if cat == "cpu" && intent.CPUModel != "" && !strings.EqualFold(s.Specs.CPUModel, intent.CPUModel) {
 				continue
 			}
 			if cat == "monitor" && s.Specs.RefreshHz < intent.MinRefreshHz {
@@ -236,9 +246,9 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 		if compat.Status != domain.Supported {
 			continue
 		}
-		p := proposal{IntentVersion: version, AmountCents: amount, BudgetLeftCents: intent.BudgetCents - amount, Compatibility: compat, Evidence: items}
+		p := proposal{IntentVersion: version, AmountCents: amount, BudgetLeftCents: intent.BudgetCents - amount, Compatibility: compat, Evidence: items, Score: domain.ScorePlan(items, amount)}
 		for _, s := range items {
-			p.Items = append(p.Items, proposalItem{SKUID: s.ID, Quantity: 1, UnitPriceCents: s.PriceCents, PriceVersion: s.PriceVersion, Title: s.Title, Label: s.Label, Category: s.Category})
+			p.Items = append(p.Items, proposalItem{SKUID: s.ID, Quantity: 1, UnitPriceCents: s.PriceCents, PriceVersion: s.PriceVersion, StockVersion: s.StockVersion, Title: s.Title, Label: s.Label, Category: s.Category})
 			var minPrice, maxPrice int64
 			for _, alternative := range byCategory[s.Category] {
 				if alternative.ProductID != s.ProductID {
@@ -270,6 +280,9 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 			}
 		}
 		p.Reasons = append(p.Reasons, fmt.Sprintf("组合总价 %d 分，预算剩余 %d 分；%s", amount, p.BudgetLeftCents, strings.Join(compat.Reasons, "；")))
+		if p.Score.Score > 0 {
+			p.Reasons = append(p.Reasons, fmt.Sprintf("演示性能/规格参考分 %.2f；每千元 %.2f 分，仅适合同品类组合比较", p.Score.Score, p.Score.ValuePerThousand))
+		}
 		valid = append(valid, p)
 	}
 	if len(intent.Soft) > 0 {
@@ -283,20 +296,7 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	} else {
 		sort.Slice(valid, func(i, j int) bool { return valid[i].AmountCents < valid[j].AmountCents })
 	}
-	chosen := []proposal{}
-	if len(valid) > 0 {
-		indices := []int{0, len(valid) / 2, len(valid) - 1}
-		if len(intent.Soft) > 0 {
-			indices = []int{0, 1, 2}
-		}
-		seen := map[int]bool{}
-		for _, i := range indices {
-			if i < len(valid) && !seen[i] {
-				chosen = append(chosen, valid[i])
-				seen[i] = true
-			}
-		}
-	}
+	chosen := chooseProfiles(valid)
 	for i := range chosen {
 		for _, item := range chosen[i].Items {
 			var low sql.NullInt64
@@ -326,7 +326,7 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	for i := range chosen {
 		chosen[i].ID = uuid.NewString()
 		chosen[i].Version = maxVersion + i + 1
-		_, err = tx.ExecContext(ctx, "INSERT INTO guide_proposals(id,session_id,user_id,intent_version,proposal_version,items_json,evidence_json,amount_cents) VALUES(?,?,?,?,?,?,?,?)", chosen[i].ID, sid, uid, version, chosen[i].Version, mustJSON(chosen[i].Items), mustJSON(map[string]any{"compatibility": chosen[i].Compatibility, "skus": chosen[i].Evidence, "reasons": chosen[i].Reasons}), chosen[i].AmountCents)
+		_, err = tx.ExecContext(ctx, "INSERT INTO guide_proposals(id,session_id,user_id,intent_version,proposal_version,items_json,evidence_json,amount_cents) VALUES(?,?,?,?,?,?,?,?)", chosen[i].ID, sid, uid, version, chosen[i].Version, mustJSON(chosen[i].Items), mustJSON(map[string]any{"compatibility": chosen[i].Compatibility, "skus": chosen[i].Evidence, "reasons": chosen[i].Reasons, "score": chosen[i].Score, "profile": chosen[i].Profile}), chosen[i].AmountCents)
 		if err != nil {
 			return nil, err
 		}
@@ -336,6 +336,44 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	}
 	_, _ = a.DB.ExecContext(ctx, "INSERT INTO guide_tool_runs(session_id,tool_name,input_summary,result_summary,duration_ms) VALUES(?,'CheckCompatibility',?,?,0)", sid, mustJSON(map[string]any{"combinations": len(combos)}), mustJSON(map[string]any{"valid": len(valid), "returned": len(chosen)}))
 	return chosen, nil
+}
+
+func chooseProfiles(valid []proposal) []proposal {
+	if len(valid) == 0 {
+		return []proposal{}
+	}
+	cheapest, fastest, bestValue := 0, 0, 0
+	for i := 1; i < len(valid); i++ {
+		if valid[i].AmountCents < valid[cheapest].AmountCents {
+			cheapest = i
+		}
+		if valid[i].Score.Score > valid[fastest].Score.Score || (valid[i].Score.Score == valid[fastest].Score.Score && valid[i].AmountCents < valid[fastest].AmountCents) {
+			fastest = i
+		}
+		if valid[i].Score.ValuePerThousand > valid[bestValue].Score.ValuePerThousand || (valid[i].Score.ValuePerThousand == valid[bestValue].Score.ValuePerThousand && valid[i].AmountCents < valid[bestValue].AmountCents) {
+			bestValue = i
+		}
+	}
+	chosen := make([]proposal, 0, 3)
+	seen := map[int]bool{}
+	add := func(index int, profile string) {
+		if !seen[index] && len(chosen) < 3 {
+			p := valid[index]
+			p.Profile = profile
+			chosen = append(chosen, p)
+			seen[index] = true
+		}
+	}
+	add(cheapest, "低价")
+	add(fastest, "性能规格")
+	add(bestValue, "每千元得分")
+	if len(chosen) < 3 {
+		add(len(valid)/2, "均衡")
+	}
+	if len(chosen) < 3 {
+		add(len(valid)-1, "更多选择")
+	}
+	return chosen
 }
 
 func pruneCombos(combos [][]domain.SKU, budget int64, limit int) [][]domain.SKU {
