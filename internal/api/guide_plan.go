@@ -179,32 +179,7 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 		}
 		filtered := []domain.SKU{}
 		for _, s := range candidates {
-			brandApplies := len(categories) == 1 || cat == "laptop" || (cat == "gpu" && domain.BrandTier("gpu", intent.Brand) != "未分层")
-			if intent.Brand != "" && brandApplies && !strings.EqualFold(intent.Brand, s.Brand) {
-				continue
-			}
-			if (cat == "laptop" || cat == "ram") && s.Specs.MemoryGB < intent.MinMemoryGB {
-				continue
-			}
-			if (cat == "ram" || cat == "motherboard") && intent.MemoryType != "" && !strings.EqualFold(s.Specs.MemoryType, intent.MemoryType) {
-				continue
-			}
-			if cat == "ram" && s.Specs.MemorySpeedMT < intent.MinMemorySpeedMT {
-				continue
-			}
-			if cat == "storage" && s.Specs.StorageGB < intent.MinStorageGB {
-				continue
-			}
-			if cat == "gpu" && s.Specs.GPUVRAMGB < intent.MinGPUVRAMGB {
-				continue
-			}
-			if cat == "gpu" && intent.GPUModel != "" && !strings.Contains(strings.ToLower(s.Title), strings.ToLower(intent.GPUModel)) {
-				continue
-			}
-			if cat == "cpu" && intent.CPUModel != "" && !strings.EqualFold(s.Specs.CPUModel, intent.CPUModel) {
-				continue
-			}
-			if cat == "monitor" && s.Specs.RefreshHz < intent.MinRefreshHz {
+			if !skuMatchesIntent(s, intent, categories) {
 				continue
 			}
 			filtered = append(filtered, s)
@@ -215,11 +190,19 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 		byCategory[cat] = filtered
 		_, _ = a.DB.ExecContext(ctx, "INSERT INTO guide_tool_runs(session_id,tool_name,input_summary,result_summary,duration_ms) VALUES(?,'SearchSKU',?,?,?)", sid, mustJSON(map[string]any{"category": cat, "budget_cents": intent.BudgetCents}), mustJSON(map[string]any{"found": len(filtered)}), time.Since(start).Milliseconds())
 	}
+	lockedCategories := map[string]bool{}
 	for _, id := range intent.LockedSKUs {
 		s, err := a.findSKU(ctx, id)
 		if err != nil || !s.Active || s.Available < 1 || !hasCategory(categories, s.Category) {
 			return nil, fmt.Errorf("locked SKU %d unavailable or outside requested categories", id)
 		}
+		if !skuMatchesIntent(s, intent, categories) {
+			return nil, fmt.Errorf("locked SKU %d conflicts with current shopping requirements", id)
+		}
+		if lockedCategories[s.Category] {
+			return nil, fmt.Errorf("multiple locked SKUs for category %s", s.Category)
+		}
+		lockedCategories[s.Category] = true
 		byCategory[s.Category] = []domain.SKU{s}
 	}
 	combos := [][]domain.SKU{{}}
@@ -336,6 +319,36 @@ func (a *Server) buildProposals(ctx context.Context, sid string, uid int64, vers
 	}
 	_, _ = a.DB.ExecContext(ctx, "INSERT INTO guide_tool_runs(session_id,tool_name,input_summary,result_summary,duration_ms) VALUES(?,'CheckCompatibility',?,?,0)", sid, mustJSON(map[string]any{"combinations": len(combos)}), mustJSON(map[string]any{"valid": len(valid), "returned": len(chosen)}))
 	return chosen, nil
+}
+
+func skuMatchesIntent(s domain.SKU, intent domain.Intent, categories []string) bool {
+	cat := s.Category
+	if !s.Active || s.Available < 1 || !hasCategory(categories, cat) || s.PriceCents > intent.BudgetCents {
+		return false
+	}
+	brandApplies := len(categories) == 1 || cat == "laptop" || (cat == "gpu" && domain.BrandTier("gpu", intent.Brand) != "未分层")
+	if intent.Brand != "" && brandApplies && !strings.EqualFold(intent.Brand, s.Brand) {
+		return false
+	}
+	if (cat == "laptop" || cat == "ram") && s.Specs.MemoryGB < intent.MinMemoryGB {
+		return false
+	}
+	if (cat == "ram" || cat == "motherboard") && intent.MemoryType != "" && !strings.EqualFold(s.Specs.MemoryType, intent.MemoryType) {
+		return false
+	}
+	if cat == "ram" && s.Specs.MemorySpeedMT < intent.MinMemorySpeedMT {
+		return false
+	}
+	if cat == "storage" && s.Specs.StorageGB < intent.MinStorageGB {
+		return false
+	}
+	if cat == "gpu" && (s.Specs.GPUVRAMGB < intent.MinGPUVRAMGB || (intent.GPUModel != "" && !strings.Contains(strings.ToLower(s.Title), strings.ToLower(intent.GPUModel)))) {
+		return false
+	}
+	if cat == "cpu" && intent.CPUModel != "" && !strings.EqualFold(s.Specs.CPUModel, intent.CPUModel) {
+		return false
+	}
+	return cat != "monitor" || s.Specs.RefreshHz >= intent.MinRefreshHz
 }
 
 func chooseProfiles(valid []proposal) []proposal {

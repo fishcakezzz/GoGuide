@@ -55,6 +55,46 @@ func TestUnknownHardConditionFailsClosed(t *testing.T) {
 	}
 }
 
+func TestExplicitlyRemovedConditionsDoNotReturn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": `{"budget_cents":800000,"categories":["laptop"],"hard":[],"soft":[]}`}, "finish_reason": "stop"}}})
+	}))
+	defer server.Close()
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_MODEL", "test-model")
+	t.Setenv("OPENAI_BASE_URL", server.URL+"/v1")
+	old := domain.Intent{BudgetCents: 800000, Categories: []string{"laptop"}, Hard: []string{"必须触屏"}, Soft: []string{"performance"}}
+	intent, err := NewGuide(nil).extract(context.Background(), "现在不要求触屏，也不强调性能", old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(intent.Hard) != 0 || len(intent.Soft) != 0 {
+		t.Fatalf("removed conditions returned: %+v", intent)
+	}
+}
+
+func TestOmittedConditionsKeepPreviousState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": `{"budget_cents":900000,"categories":["laptop"]}`}, "finish_reason": "stop"}}})
+	}))
+	defer server.Close()
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_MODEL", "test-model")
+	t.Setenv("OPENAI_BASE_URL", server.URL+"/v1")
+	old := domain.Intent{Hard: []string{"必须触屏"}, Soft: []string{"performance"}}
+	intent, err := NewGuide(nil).extract(context.Background(), "预算改成九千", old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(intent.Hard) != 1 || len(intent.Soft) != 1 {
+		t.Fatalf("omitted conditions lost: %+v", intent)
+	}
+}
+
 func TestGuideRequiresModel(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
